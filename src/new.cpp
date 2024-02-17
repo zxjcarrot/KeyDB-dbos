@@ -14,24 +14,27 @@ void *operator new(size_t size, enum MALLOC_CLASS mclass)
 [[deprecated]]
 void *operator new(size_t size)
 {
-    return zmalloc(size, MALLOC_LOCAL);
+    //return zmalloc(size, MALLOC_LOCAL);
+    return malloc(size);
 }
 
 void *operator new(size_t size, enum MALLOC_CLASS mclass) 
 { 
-    return zmalloc(size, mclass);
+    //return zmalloc(size, mclass);
+    return malloc(size);
 }
 
 void *operator new(std::size_t size, const std::nothrow_t &) noexcept
 {
-    return zmalloc(size, MALLOC_LOCAL);
+    //return zmalloc(size, MALLOC_LOCAL);
+    return malloc(size);
 }
 
 //need to do null checks for delete since the compiler can optimize out null checks in zfree
 void operator delete(void * p) noexcept
 {
     if (p != nullptr)
-        zfree(p);
+        free(p);
 }
 
 void operator delete(void *p, std::size_t) noexcept

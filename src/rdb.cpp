@@ -48,6 +48,21 @@
 #include <future>
 #include "aelocker.h"
 
+#ifdef DBOS
+
+#ifdef __cplusplus
+extern "C"{
+#endif 
+
+#include "dune.h"
+#include "fast_spawn.h"
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+
 /* This macro is called when the internal RDB structure is corrupt */
 #define rdbReportCorruptRDB(...) rdbReportError(1, __LINE__,__VA_ARGS__)
 /* This macro is called when RDB read failed (possibly a short read) */
@@ -361,8 +376,10 @@ ssize_t rdbSaveLzfBlob(rio *rdb, void *data, size_t compress_len,
 writeerr:
     return -1;
 }
+       #include <execinfo.h>
 
 ssize_t rdbSaveLzfStringObject(rio *rdb, const unsigned char *s, size_t len) {
+    assert(s != NULL);
     char rgbuf[2048];
     size_t comprlen, outlen;
     void *out = rgbuf;
@@ -372,6 +389,15 @@ ssize_t rdbSaveLzfStringObject(rio *rdb, const unsigned char *s, size_t len) {
     outlen = len-4;
     if (outlen >= sizeof(rgbuf))
         if ((out = zmalloc(outlen+1, MALLOC_LOCAL)) == NULL) return 0;
+    #ifdef DBOS
+    //dune_printf("before lzf_compress, s %p, len %d, out %p, outlen %d\n", s, len, out, outlen);
+    // void* callstack[128];
+    // int i, frames = backtrace(callstack, 128);
+    // char** strs = backtrace_symbols(callstack, frames);
+    // for (i = 0; i < frames; ++i) {
+    //     dune_printf("%s\n", strs[i]);
+    // }
+    #endif
     comprlen = lzf_compress(s, len, out, outlen);
     if (comprlen == 0) {
         if (out != rgbuf)
@@ -1328,7 +1354,9 @@ int rdbSaveRio(rio *rdb, const redisDbPersistentDataSnapshot **rgpdb, int *error
     if (rdbWriteRaw(rdb,magic,9) == -1) goto werr;
     if (rdbSaveInfoAuxFields(rdb,rdbflags,rsi) == -1) goto werr;
     if (rdbSaveModulesAux(rdb, REDISMODULE_AUX_BEFORE_RDB) == -1) goto werr;
-
+    #ifdef DBOS
+    dune_printf("iterating databases\n");
+    #endif
     for (j = 0; j < cserver.dbnum; j++) {
         const redisDbPersistentDataSnapshot *db = rgpdb != nullptr ? rgpdb[j] : g_pserver->db[j];
         if (db->size() == 0) continue;
@@ -1347,7 +1375,11 @@ int rdbSaveRio(rio *rdb, const redisDbPersistentDataSnapshot **rgpdb, int *error
         
         /* Iterate this DB writing every entry */
         size_t ckeysExpired = 0;
+        int kv_count = 0;
         bool fSavedAll = db->iterate_threadsafe([&](const char *keystr, robj_roptr o)->bool {
+            #ifdef DBOS
+            //dune_printf("iterating kv %d\n", kv_count++);
+            #endif
             if (o->FExpires())
                 ++ckeysExpired;
             
@@ -1371,7 +1403,9 @@ int rdbSaveRio(rio *rdb, const redisDbPersistentDataSnapshot **rgpdb, int *error
             goto werr;
         serverAssert(ckeysExpired == db->expireSize());
     }
-
+    #ifdef DBOS
+    dune_printf("done iterating databases\n");
+    #endif
     /* If we are storing the replication information on disk, persist
      * the script cache as well: on successful PSYNC after a restart, we need
      * to be able to process any EVALSHA inside the replication backlog the
@@ -1487,6 +1521,9 @@ int rdbSaveFile(char *filename, const redisDbPersistentDataSnapshot **rgpdb, rdb
     int error = 0;
 
     getTempFileName(tmpfile, g_pserver->rdbThreadVars.tmpfileNum);
+    #ifdef DBOS
+    dune_printf("saving to %s\n", tmpfile);
+    #endif
     fp = fopen(tmpfile,"w");
     if (!fp) {
         char *cwdp = getcwd(cwd,MAXPATHLEN);
@@ -1541,6 +1578,11 @@ int rdbSaveFile(char *filename, const redisDbPersistentDataSnapshot **rgpdb, rdb
         g_pserver->lastbgsave_status = C_OK;
     }
     stopSaving(1);
+    #ifdef DBOS
+    dune_printf("DB saved on disk, tmpfile %s, dbfile %s\n", tmpfile, filename);
+    #else
+    serverLog(LL_NOTICE,"DB saved on disk, tmpfile %s, dbfile %s", tmpfile, filename);
+    #endif
     return C_OK;
 
 werr:
@@ -1595,15 +1637,126 @@ void *rdbSaveThread(void *vargs)
     return (retval == C_OK) ? (void*)0 : (void*)1;
 }
 
+#ifdef DBOS
+typedef struct dbosRdbSaveArguments {
+    int req;
+    char *filename;
+    rdbSaveInfo rsi;
+    int rsi_null;
+    int rdbflags;
+    int purpose;
+} dbosRdbSaveArguments;
+extern readWriteLock g_forkLock;
+dbosRdbSaveArguments dbosRdbSaveArguments_args;
+static void* dbosRdbSaveBackground(void*) {
+    //sleep(1000);
+    dune_printf("&g_forkLock %p, g_forkLock.m_writeCount %d, g_forkLock.m_readCount %d, g_forkLock.m_writeWaiting %d\n", &g_forkLock, g_forkLock.m_writeCount, g_forkLock.m_readCount, g_forkLock.m_writeWaiting);
+    aeForkLockInChildReset();
+    dune_printf("&g_forkLock %p, g_forkLock.m_writeCount %d, g_forkLock.m_readCount %d, g_forkLock.m_writeWaiting %d\n", &g_forkLock,  g_forkLock.m_writeCount, g_forkLock.m_readCount, g_forkLock.m_writeWaiting);
+    assert(g_forkLock.m_writeCount == 1);
+    aeReleaseForkLock();
+    redisServerThreadVars vars;
+    serverTL = &vars;
+    g_pserver->in_fork_child = dbosRdbSaveArguments_args.purpose;
+    setOOMScoreAdj(CONFIG_OOM_BGCHILD);
+    g_pserver->rdb_child_pid = 10000;
+    int retval = rdbSave(nullptr, 
+                         dbosRdbSaveArguments_args.rsi_null ? NULL : &dbosRdbSaveArguments_args.rsi);
+                         //&dbosRdbSaveArguments_args.rsi);
+    if (retval == C_OK) {
+        sendChildCowInfo(CHILD_INFO_TYPE_RDB_COW_SIZE, "RDB");
+    } else {
+        dune_printf("rdbSave error %d\n", retval);
+    }
+
+    return NULL;
+}
+#endif
+
 int rdbSaveBackgroundFork(rdbSaveInfo *rsi) {
     pid_t childpid;
+    
+    #ifdef DBOS
+    int purpose = CHILD_TYPE_RDB;
+    if (hasActiveChildProcess() || g_pserver->rdb_child_pid != -1) return C_ERR;
+    serverAssert(g_pserver->rdb_child_pid != 10000);
+    if (isMutuallyExclusiveChildType(purpose)) {
+        if (hasActiveChildProcess())
+            return C_ERR;
 
+        openChildInfoPipe();
+    }
+    long long startWriteLock = ustime();
+    aeAcquireForkLock();
+    latencyAddSampleIfNeeded("fork-lock",(ustime()-startWriteLock)/1000);
+
+    g_pserver->dirty_before_bgsave = g_pserver->dirty;
+    g_pserver->lastbgsave_try = time(NULL);
+
+    if (rsi) {
+        dbosRdbSaveArguments_args.rsi = *rsi;
+        dbosRdbSaveArguments_args.rsi_null = 0;
+    } else {
+        dbosRdbSaveArguments_args.rsi_null = 1;
+    }
+    memcpy(&dbosRdbSaveArguments_args.rsi.repl_id, g_pserver->replid, sizeof(g_pserver->replid));
+    dbosRdbSaveArguments_args.rsi.master_repl_offset = g_pserver->master_repl_offset;
+    dbosRdbSaveArguments_args.purpose = purpose;
+
+    childpid = dune_fast_spawn_snapshot_thread_id();    
+    dune_fast_spawn_on_snapshot(dbosRdbSaveBackground, NULL);
+
+    /* Parent */
+    aeReleaseForkLock();
+    g_pserver->stat_total_forks++;
+    g_pserver->stat_fork_time = ustime()-startWriteLock;
+    g_pserver->stat_fork_rate = (double) zmalloc_used_memory() * 1000000 / g_pserver->stat_fork_time / (1024*1024*1024); /* GB per second. */
+    latencyAddSampleIfNeeded("fork",g_pserver->stat_fork_time/1000);
+    if (childpid == -1) {
+        if (isMutuallyExclusiveChildType(purpose)) closeChildInfoPipe();
+        return C_ERR;
+    }
+
+    /* The child_pid and child_type are only for mutual exclusive children.
+        * other child types should handle and store their pid's in dedicated variables.
+        *
+        * Today, we allows CHILD_TYPE_LDB to run in parallel with the other fork types:
+        * - it isn't used for production, so it will not make the server be less efficient
+        * - used for debugging, and we don't want to block it from running while other
+        *   forks are running (like RDB and AOF) */
+    if (isMutuallyExclusiveChildType(purpose)) {
+        g_pserver->child_pid = childpid;
+        g_pserver->child_type = purpose;
+        g_pserver->stat_current_cow_bytes = 0;
+        g_pserver->stat_current_cow_updated = 0;
+        g_pserver->stat_current_save_keys_processed = 0;
+        g_pserver->stat_module_progress = 0;
+        g_pserver->stat_current_save_keys_total = dbTotalServerKeyCount();
+    }
+
+    updateDictResizePolicy();
+    moduleFireServerEvent(REDISMODULE_EVENT_FORK_CHILD,
+                            REDISMODULE_SUBEVENT_FORK_CHILD_BORN,
+                            NULL);
+    long long end = ustime();
+    serverLog(LL_NOTICE,"Background saving started by pid %d, took %d us",childpid, end - startWriteLock);
+    g_pserver->rdb_save_time_start = time(NULL);
+    g_pserver->rdb_child_type = RDB_CHILD_TYPE_DISK;
+    updateDictResizePolicy();
+    //sleep(100);
+    return C_OK;
+
+    #else 
     if (hasActiveChildProcess() || g_pserver->rdb_child_pid != -1) return C_ERR;
     serverAssert(g_pserver->rdb_child_pid != 10000);
 
     g_pserver->dirty_before_bgsave = g_pserver->dirty;
     g_pserver->lastbgsave_try = time(NULL);
 
+    #ifdef ODF
+    prctl(65, 0, 0, 0, 0);
+    serverLog(LL_NOTICE, "enabled on-demand-fork through prctl(65, 0, 0, 0, 0)");
+    #endif
     if ((childpid = redisFork(CHILD_TYPE_RDB)) == 0) {
         int retval;
 
@@ -1631,6 +1784,7 @@ int rdbSaveBackgroundFork(rdbSaveInfo *rsi) {
         return C_OK;
     }
     return C_OK; /* unreached */
+    #endif
 }
 
 int launchRdbSaveThread(pthread_t &child, rdbSaveInfo *rsi)

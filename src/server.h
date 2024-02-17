@@ -2299,6 +2299,8 @@ struct redisServer {
     struct redisServerThreadVars rgthreadvar[MAX_EVENT_LOOPS];
     struct redisServerThreadVars modulethreadvar; /* Server thread local variables to be used by module threads */
     pthread_t rgthread[MAX_EVENT_LOOPS];
+    cpu_set_t rgthread_cpu_sets[MAX_EVENT_LOOPS];
+    pthread_attr_t rgthread_attrs[MAX_EVENT_LOOPS];
 
     std::atomic<unsigned int> lruclock;      /* Clock for LRU eviction */
     std::atomic<int> shutdown_asap;          /* SHUTDOWN needed ASAP */

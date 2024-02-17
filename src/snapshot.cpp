@@ -1,6 +1,21 @@
 #include "server.h"
 #include "aelocker.h"
 
+#ifdef DBOS
+
+#ifdef __cplusplus
+extern "C"{
+#endif 
+
+#include "dune.h"
+#include "fast_spawn.h"
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+
 static const size_t c_elementsSmallLimit = 500000;
 static fastlock s_lock {"consolidate_children"};    // this lock ensures only one thread is consolidating at a time
 
@@ -556,6 +571,9 @@ bool redisDbPersistentDataSnapshot::iterate_threadsafe_core(std::function<bool(c
     //  use volatile to ensure it's not checked too late.  This makes it more
     //  likely we'll detect races (but it won't gurantee it)
     aeAcquireLock();
+    #ifdef DBOS
+    dune_printf("aeAcquireLock succeeded\n");
+    #endif
     dict *dictTombstone;
     __atomic_load(&m_pdictTombstone, &dictTombstone, __ATOMIC_ACQUIRE);
     volatile ssize_t celem = (ssize_t)size();
@@ -565,6 +583,9 @@ bool redisDbPersistentDataSnapshot::iterate_threadsafe_core(std::function<bool(c
     bool fResult = true;
 
     dictIterator *di = dictGetSafeIterator(m_pdict);
+    #ifdef DBOS
+    dune_printf("after dictGetSafeIterator\n");
+    #endif
     while(fResult && ((de = dictNext(di)) != nullptr))
     {
         --celem;

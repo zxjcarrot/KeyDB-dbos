@@ -2,6 +2,7 @@
 #include <condition_variable>
 
 class readWriteLock {
+public:
     fastlock m_readLock;
     fastlock m_writeLock;
     std::condition_variable_any m_cv;

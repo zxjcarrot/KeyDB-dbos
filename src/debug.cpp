@@ -1005,7 +1005,7 @@ void _serverAssert(const char *estr, const char *file, int line) {
     g_fInCrash = true;
     bugReportStart();
     serverLog(LL_WARNING,"=== ASSERTION FAILED ===");
-    serverLog(LL_WARNING,"==> %s:%d '%s' is not true",file,line,estr);
+    serverLog(LL_WARNING,"==> %s:%d '%s' is not true on core %d",file,line,estr, sched_getcpu());
 
     if (g_pserver->crashlog_enabled) {
 #if defined HAVE_BACKTRACE || defined UNW_LOCAL_ONLY

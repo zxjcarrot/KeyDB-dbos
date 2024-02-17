@@ -73,6 +73,21 @@
 #include <sys/sysinfo.h>
 #endif
 
+#ifdef DBOS
+
+#ifdef __cplusplus
+extern "C"{
+#endif 
+
+#include "dune.h"
+#include "fast_spawn.h"
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+
 int g_fTestMode = false;
 const char *motd_url = "http://api.keydb.dev/motd/motd_server.txt";
 const char *motd_cache_file = "/.keydb-server-motd";
@@ -2235,29 +2250,13 @@ void checkChildrenDone(void) {
             if (exitcode == 0) receiveChildInfo();
             closeChildInfoPipe();
         }
-    }
-    else if ((pid = waitpid(-1, &statloc, WNOHANG)) != 0) {
-        int exitcode = WIFEXITED(statloc) ? WEXITSTATUS(statloc) : -1;
-        int bysignal = 0;
-
-        if (WIFSIGNALED(statloc)) bysignal = WTERMSIG(statloc);
-
-        /* sigKillChildHandler catches the signal and calls exit(), but we
-         * must make sure not to flag lastbgsave_status, etc incorrectly.
-         * We could directly terminate the child process via SIGUSR1
-         * without handling it */
-        if (exitcode == SERVER_CHILD_NOERROR_RETVAL) {
-            bysignal = SIGUSR1;
-            exitcode = 1;
-        }
-
-        if (pid == -1) {
-            serverLog(LL_WARNING,"waitpid() returned an error: %s. "
-                "child_type: %s, child_pid = %d",
-                strerror(errno),
-                strChildType(g_pserver->child_type),
-                (int) g_pserver->child_pid);
-        } else if (pid == g_pserver->child_pid) {
+    } else {
+        #ifdef DBOS
+        // serverLog(LL_NOTICE,
+        //                       "checkChildrenDone before");
+        if (hasActiveChildProcess() && !dune_fast_spawn_snapshot_running()) {
+            int bysignal = 0;
+            int exitcode = 0;
             if (g_pserver->child_type == CHILD_TYPE_RDB) {
                 backgroundSaveDoneHandler(exitcode, bysignal);
             } else if (g_pserver->child_type == CHILD_TYPE_AOF) {
@@ -2270,16 +2269,63 @@ void checkChildrenDone(void) {
             }
             if (!bysignal && exitcode == 0) receiveChildInfo();
             resetChildState();
-        } else {
-            if (!ldbRemoveChild(pid)) {
-                serverLog(LL_WARNING,
-                          "Warning, detected child with unmatched pid: %ld",
-                          (long) pid);
-            }
-        }
+            int cpu_id = dune_get_cpu_id();
+            fast_spawn_state_t * state = dune_get_fast_spawn_state();
+            dune_printf("rdb save stats: shootdowns %d, cycles per shootdown %lu, ipi_calls %lu for snapshot core %d, write calls %d, write_latency %lu, cycles_between_consecutive_writes %lu, syscalls %lu\n", state->shootdowns[cpu_id], state->cycles_spent_for_shootdown[cpu_id] / (state->shootdowns[cpu_id] + 1), state->ipi_calls[SNAPSHOT_CORE], SNAPSHOT_CORE, state->write_calls[SNAPSHOT_CORE],  state->cycles_per_write_syscall[SNAPSHOT_CORE] / ( state->write_calls[SNAPSHOT_CORE] + 1), state->cycles_between_consecutive_writes[SNAPSHOT_CORE] / (state->write_calls[SNAPSHOT_CORE] + 1), state->syscalls[SNAPSHOT_CORE]);
 
-        /* start any pending forks immediately. */
-        replicationStartPendingFork();
+            // serverLog(LL_NOTICE,
+            //                   "checkChildrenDone done 1");
+
+            /* start any pending forks immediately. */
+            //replicationStartPendingFork();
+        }
+        #else
+        if ((pid = waitpid(-1, &statloc, WNOHANG)) != 0) {
+            int exitcode = WIFEXITED(statloc) ? WEXITSTATUS(statloc) : -1;
+            int bysignal = 0;
+
+            if (WIFSIGNALED(statloc)) bysignal = WTERMSIG(statloc);
+
+            /* sigKillChildHandler catches the signal and calls exit(), but we
+            * must make sure not to flag lastbgsave_status, etc incorrectly.
+            * We could directly terminate the child process via SIGUSR1
+            * without handling it */
+            if (exitcode == SERVER_CHILD_NOERROR_RETVAL) {
+                bysignal = SIGUSR1;
+                exitcode = 1;
+            }
+
+            if (pid == -1) {
+                serverLog(LL_WARNING,"waitpid() returned an error: %s. "
+                    "child_type: %s, child_pid = %d",
+                    strerror(errno),
+                    strChildType(g_pserver->child_type),
+                    (int) g_pserver->child_pid);
+            } else if (pid == g_pserver->child_pid) {
+                if (g_pserver->child_type == CHILD_TYPE_RDB) {
+                    backgroundSaveDoneHandler(exitcode, bysignal);
+                } else if (g_pserver->child_type == CHILD_TYPE_AOF) {
+                    backgroundRewriteDoneHandler(exitcode, bysignal);
+                } else if (g_pserver->child_type == CHILD_TYPE_MODULE) {
+                    ModuleForkDoneHandler(exitcode, bysignal);
+                } else {
+                    serverPanic("Unknown child type %d for child pid %d", g_pserver->child_type, g_pserver->child_pid);
+                    exit(1);
+                }
+                if (!bysignal && exitcode == 0) receiveChildInfo();
+                resetChildState();
+            } else {
+                if (!ldbRemoveChild(pid)) {
+                    serverLog(LL_WARNING,
+                            "Warning, detected child with unmatched pid: %ld",
+                            (long) pid);
+                }
+            }
+
+            /* start any pending forks immediately. */
+            replicationStartPendingFork();
+        }
+        #endif
     }
 }
 
@@ -3912,7 +3958,7 @@ static void initServerThread(struct redisServerThreadVars *pvar, int fMain)
 void initServer(void) {
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
-    setupSignalHandlers();
+    //setupSignalHandlers();
     makeThreadKillable();
 
     zfree(g_pserver->db);   // initServerConfig created a dummy array, free that now
@@ -6651,13 +6697,14 @@ void redisAsciiArt(void) {
     if (g_pserver->cluster_enabled) mode = "cluster";
     else if (g_pserver->sentinel_mode) mode = "sentinel";
     else mode = "standalone";
-
+    int stdout_fileno = fileno(stdout);
+    bool fileno_isatty = true;//isatty(stdout_fileno);
     /* Show the ASCII logo if: log file is stdout AND stdout is a
      * tty AND syslog logging is disabled. Also show logo if the user
      * forced us to do so via keydb.conf. */
     int show_logo = ((!g_pserver->syslog_enabled &&
                       g_pserver->logfile[0] == '\0' &&
-                      isatty(fileno(stdout))) ||
+                      fileno_isatty) ||
                      g_pserver->always_show_logo);
 
     if (!show_logo) {
@@ -7361,13 +7408,27 @@ void *timeThreadMain(void*) {
     }
     aeThreadOffline();
 }
-
+std::atomic<int> workers_ready{0};
 void *workerThreadMain(void *parg)
-{
+{   
     int iel = (int)((int64_t)parg);
     serverLog(LL_NOTICE, "Thread %d alive.", iel);
     serverTL = g_pserver->rgthreadvar+iel;  // set the TLS threadsafe global
     tlsInitThread();
+
+    #ifdef DBOS
+    int cpu_id = sched_getcpu();
+	dune_ipi_set_cpu_id(cpu_id);
+	volatile int ret = dune_enter();
+	if (ret) {
+		printf("workerThreadMain: failed to enter dune\n");
+		return NULL;
+	}
+    dune_printf("workerThreadMain worker %d entered dune mode on cpu %d\n", iel, cpu_id);
+
+    fast_spawn_state_t* state= dune_get_fast_spawn_state();
+	dune_set_thread_state(state, cpu_id, DUNE_THREAD_MAIN);
+    #endif
 
     if (iel != IDX_EVENT_LOOP_MAIN)
     {
@@ -7381,6 +7442,7 @@ void *workerThreadMain(void *parg)
     moduleAcquireGIL(true); // Normally afterSleep acquires this, but that won't be called on the first run
     aeThreadOnline();
     aeEventLoop *el = g_pserver->rgthreadvar[iel].el;
+    workers_ready++;
     try
     {
         aeMain(el);
@@ -7458,6 +7520,41 @@ int main(int argc, char **argv) {
     int j;
     char config_from_stdin = 0;
 
+    #ifdef DBOS
+    cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	CPU_SET(16, &cpuset);
+
+   	pthread_t main_thread = pthread_self();    
+   	pthread_setaffinity_np(main_thread, sizeof(cpu_set_t), &cpuset);
+    
+    dune_procmap_dump();
+    int ret = dune_init_with_ipi(1);
+	if (ret) {
+		printf("failed to initialize dune\n");
+		return ret;
+	}
+	ret = dune_enter();
+	if (ret) {
+		printf("failed to enter dune\n");
+		return ret;
+	}
+    dune_ipi_set_cpu_id(16);
+    dune_set_max_cores(19);
+    dune_fast_spawn_configure();
+
+
+    fast_spawn_state_t* state = dune_get_fast_spawn_state();
+
+	dune_set_thread_state(state, cserver.cthreads, DUNE_THREAD_MAIN);
+    
+    if (dune_fast_spawn_init()) {
+        printf("failed to initialize fast_spawn\n");
+    } else {
+        printf("dune dbos fast_spawn intialized\n");
+    }
+    
+    #endif
     std::set_terminate(OnTerminate);
 
     {
@@ -7791,26 +7888,28 @@ int main(int argc, char **argv) {
         pthread_setschedparam(cserver.time_thread_id, SCHED_FIFO, &time_thread_priority);
     }
 
-    pthread_attr_t tattr;
-    pthread_attr_init(&tattr);
-    pthread_attr_setstacksize(&tattr, 1 << 23); // 8 MB
+
+    // pthread_attr_t tattr;
+    // pthread_attr_init(&tattr);
+    // pthread_attr_setstacksize(&tattr, 1 << 23); // 8 MB
     for (int iel = 0; iel < cserver.cthreads; ++iel)
     {
-        pthread_create(g_pserver->rgthread + iel, &tattr, workerThreadMain, (void*)((int64_t)iel));
+        pthread_attr_init(&g_pserver->rgthread_attrs[iel]);
+        pthread_attr_setstacksize(&g_pserver->rgthread_attrs[iel], 1 << 23);
         if (cserver.fThreadAffinity)
         {
 #ifdef __linux__
-            cpu_set_t cpuset;
-            CPU_ZERO(&cpuset);
-            CPU_SET(iel + cserver.threadAffinityOffset, &cpuset);
-            if (pthread_setaffinity_np(g_pserver->rgthread[iel], sizeof(cpu_set_t), &cpuset) == 0)
+            CPU_ZERO(&g_pserver->rgthread_cpu_sets[iel]);
+            CPU_SET(iel + cserver.threadAffinityOffset, &g_pserver->rgthread_cpu_sets[iel]);
+            if (pthread_attr_setaffinity_np(&g_pserver->rgthread_attrs[iel], sizeof(cpu_set_t), &g_pserver->rgthread_cpu_sets[iel]) == 0)
             {
-                serverLog(LL_NOTICE, "Binding thread %d to cpu %d", iel, iel + cserver.threadAffinityOffset + 1);
+                serverLog(LL_NOTICE, "Binding thread %d to cpu %d", iel, iel + cserver.threadAffinityOffset);
             }
 #else
 			serverLog(LL_WARNING, "CPU pinning not available on this platform");
 #endif
         }
+        pthread_create(g_pserver->rgthread + iel, &g_pserver->rgthread_attrs[iel], workerThreadMain, (void*)((int64_t)iel));
     }
 
     /* Block SIGALRM from this thread, it should only be received on a server thread */
@@ -7819,11 +7918,26 @@ int main(int argc, char **argv) {
     sigaddset(&sigset, SIGALRM);
     pthread_sigmask(SIG_BLOCK, &sigset, nullptr);
 
+    #ifdef DBOS
+    while (workers_ready != cserver.cthreads) {
+        ;
+    }
+    dune_fast_spawn_signal_copy_worker();
+    #endif
+
     /* The main thread sleeps until all the workers are done.
         this is so that all worker threads are orthogonal in their startup/shutdown */
     void *pvRet;
-    for (int iel = 0; iel < cserver.cthreads; ++iel)
+    for (int iel = 0; iel < cserver.cthreads; ++iel) {
+        // struct timespec ts;
+        // ts.tv_sec = 0;
+        // ts.tv_nsec = 5000000;
+        // while (pthread_timedjoin_np(g_pserver->rgthread[iel], &pvRet, &ts)) {
+        //     ;
+        // }
         pthread_join(g_pserver->rgthread[iel], &pvRet);
+    }
+        
 
     /* free our databases */
     bool fLockAcquired = aeTryAcquireLock(false);

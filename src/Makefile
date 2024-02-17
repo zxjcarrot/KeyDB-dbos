@@ -19,7 +19,7 @@ export BUILD_TLS ?= yes
 release_hdr := $(shell sh -c './mkreleasehdr.sh')
 uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 uname_M := $(shell sh -c 'uname -m 2>/dev/null || echo not')
-OPTIMIZATION?=-O2 -flto
+OPTIMIZATION?=-O1 # -flto
 DEPENDENCY_TARGETS=hiredis linenoise lua hdr_histogram
 NODEPS:=clean distclean
 
@@ -53,13 +53,13 @@ PKG_CONFIG?=pkg-config
 
 # Default allocator defaults to Jemalloc if it's not an ARM
 MALLOC=libc
-ifneq ($(uname_M),armv6l)
-ifneq ($(uname_M),armv7l)
-ifeq ($(uname_S),Linux)
-	MALLOC=jemalloc
-endif
-endif
-endif
+# ifneq ($(uname_M),armv6l)
+# ifneq ($(uname_M),armv7l)
+# ifeq ($(uname_S),Linux)
+# 	MALLOC=jemalloc
+# endif
+# endif
+# endif
 
 USEASM?=true
 ENABLE_FLASH?=no
@@ -138,11 +138,27 @@ endif
 # Override default settings if possible
 -include .make-settings
 
+
+ifeq ($(ENABLE_DBOS), yes)
+	CFLAGS+=-DDBOS
+	CXXFLAGS+=-DDBOS
+endif
+
+ifeq ($(ENABLE_ODF), yes)
+	CFLAGS+=-DODF
+	CXXFLAGS+=-DODF
+endif
+
 DEBUG=-g -ggdb
-FINAL_CFLAGS=$(STD) $(WARN) $(OPT) $(DEBUG) $(CFLAGS) $(KEYDB_CFLAGS) $(REDIS_CFLAGS)
-FINAL_CXXFLAGS=$(CXX_STD) $(WARN) $(OPT) $(DEBUG) $(CXXFLAGS) $(KEYDB_CFLAGS) $(REDIS_CFLAGS)
-FINAL_LDFLAGS=$(LDFLAGS) $(KEYDB_LDFLAGS) $(DEBUG)
+FINAL_CFLAGS=$(STD) $(WARN) $(OPT) $(DEBUG) $(CFLAGS) $(KEYDB_CFLAGS) $(REDIS_CFLAGS)  -mincoming-stack-boundary=3 -L../../../../libdune/ -I../../../libdune/
+FINAL_CXXFLAGS=$(CXX_STD) $(WARN) $(OPT) $(DEBUG) $(CXXFLAGS) $(KEYDB_CFLAGS) $(REDIS_CFLAGS)  -mincoming-stack-boundary=3 -L../../../../libdune/ -I../../../libdune/
+FINAL_LDFLAGS=$(LDFLAGS) $(KEYDB_LDFLAGS) $(DEBUG) -L../../../libdune/
 FINAL_LIBS+=-lm -lz -lcrypto
+
+
+ifeq ($(ENABLE_DBOS), yes)
+	FINAL_LIBS+=-ldune
+endif
 
 ifneq ($(uname_S),Darwin)
     ifneq ($(uname_S),FreeBSD)

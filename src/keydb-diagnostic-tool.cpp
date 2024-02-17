@@ -207,7 +207,7 @@ static long long ustime(void) {
 /* _serverAssert is needed by dict */
 extern "C" void _serverAssert(const char *estr, const char *file, int line) {
     fprintf(stderr, "=== ASSERTION FAILED ===");
-    fprintf(stderr, "==> %s:%d '%s' is not true",file,line,estr);
+    fprintf(stderr, "==> %s:%d '%s' is not true, on core %d",file,line,estr, sched_getcpu());
     *((char*)-1) = 'x';
 }
 

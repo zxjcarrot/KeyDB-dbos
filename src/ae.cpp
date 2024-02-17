@@ -818,11 +818,21 @@ int aeWait(int fd, int mask, long long milliseconds) {
 void aeMain(aeEventLoop *eventLoop) {
     eventLoop->stop = 0;
     g_eventLoopThisThread = eventLoop;
+    int cnt = 0 ;
+    void * data;
+    unsigned long s = 0;
     while (!eventLoop->stop) {
+        // if (cnt++ % 1000 == 0) {
+        //     data = malloc(1024 * 1024 * 1);
+        //     memset(data, 0, 1024 * 1024 * 1);
+        //     s += (unsigned long)(data);
+        //     free(data);
+        // }
         serverAssert(!aeThreadOwnsLock()); // we should have relinquished it after processing
         aeProcessEvents(eventLoop, AE_ALL_EVENTS|AE_CALL_BEFORE_SLEEP|AE_CALL_AFTER_SLEEP);
         serverAssert(!aeThreadOwnsLock()); // we should have relinquished it after processing
     }
+    printf("Preallocated %d times, %lu\n", cnt, s);
 }
 
 const char *aeGetApiName(void) {
@@ -850,6 +860,20 @@ void aeThreadOnline()
 {
     g_forkLock.acquireRead();
 }
+#ifdef DBOS
+
+#ifdef __cplusplus
+extern "C"{
+#endif 
+
+#include "dune.h"
+#include "fast_spawn.h"
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
 
 void aeAcquireLock()
 {
@@ -891,6 +915,12 @@ void aeReleaseForkLock()
 void aeForkLockInChild()
 {
     g_forkLock.setMulti(false);
+}
+
+void aeForkLockInChildReset()
+{
+    g_forkLock.setMulti(false);
+    fastlock_init(&g_lock, "AE child");
 }
 
 int aeThreadOwnsLock()
